@@ -569,6 +569,7 @@ impl OsRebuildArgs {
         .passthrough(&self.common.passthrough)
         .message(message)
         .nom(!self.common.no_nom)
+        .rewrite_paths(!self.common.no_rewrite_paths)
         .run()
         .wrap_err("Failed to build configuration")?;
 

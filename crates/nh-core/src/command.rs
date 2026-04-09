@@ -779,6 +779,7 @@ pub struct Build {
   installable: Installable,
   extra_args: Vec<OsString>,
   nom: bool,
+  rewrite_paths: bool,
 }
 
 impl Build {
@@ -789,6 +790,7 @@ impl Build {
       installable,
       extra_args: vec![],
       nom: false,
+      rewrite_paths: true,
     }
   }
 
@@ -807,6 +809,12 @@ impl Build {
   #[must_use]
   pub const fn nom(mut self, yes: bool) -> Self {
     self.nom = yes;
+    self
+  }
+
+  #[must_use]
+  pub const fn rewrite_paths(mut self, yes: bool) -> Self {
+    self.rewrite_paths = yes;
     self
   }
 
@@ -853,8 +861,11 @@ impl Build {
       // When building a flake, nix copies the source into /nix/store and
       // error messages reference that store path instead of the original.
       // Resolve the exact store path for this flake so we can rewrite it.
-      let store_path_mapping =
-        self.installable.flake_reference().and_then(|flake_ref| {
+      let store_path_mapping = self
+        .rewrite_paths
+        .then(|| self.installable.flake_reference())
+        .flatten()
+        .and_then(|flake_ref| {
           let output = Exec::cmd("nix")
             .args(["flake", "metadata", "--json", flake_ref])
             .stdout(Redirection::Pipe)

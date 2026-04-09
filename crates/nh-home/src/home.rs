@@ -133,6 +133,7 @@ impl HomeRebuildArgs {
         .passthrough(&self.common.passthrough)
         .message("Building Home-Manager configuration")
         .nom(!self.common.no_nom)
+        .rewrite_paths(!self.common.no_rewrite_paths)
         .run()
         .wrap_err("Failed to build Home-Manager configuration")?;
     }

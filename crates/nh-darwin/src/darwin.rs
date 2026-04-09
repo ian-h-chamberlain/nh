@@ -144,6 +144,7 @@ impl DarwinRebuildArgs {
         .passthrough(&self.common.passthrough)
         .message("Building Darwin configuration")
         .nom(!self.common.no_nom)
+        .rewrite_paths(!self.common.no_rewrite_paths)
         .run()
         .wrap_err("Failed to build Darwin configuration")?;
     }
