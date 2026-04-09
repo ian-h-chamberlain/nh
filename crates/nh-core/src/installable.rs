@@ -510,7 +510,7 @@ const FALLBACK_HELP_HINT: &str =
 impl Installable {
   /// Returns the flake reference path if this is a Flake installable.
   #[must_use]
-  pub fn flake_reference(&self) -> Option<&str> {
+  pub const fn flake_reference(&self) -> Option<&str> {
     match self {
       Self::Flake { reference, .. } => Some(reference.as_str()),
       _ => None,

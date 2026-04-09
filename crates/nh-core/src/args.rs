@@ -22,7 +22,8 @@ pub struct CommonRebuildArgs {
   #[arg(long)]
   pub no_nom: bool,
 
-  /// Don't rewrite store paths in error messages back to the original flake path
+  /// Don't rewrite store paths in error messages back to the original flake
+  /// path
   #[arg(long, env = "NH_NO_REWRITE_PATHS")]
   pub no_rewrite_paths: bool,
 
