@@ -201,21 +201,17 @@ impl ElevationStrategy {
   pub fn resolve(&self) -> Result<PathBuf> {
     match self {
       Self::Auto | Self::Passwordless => Self::choice(),
-      Self::Prefer(program) => {
-        which(program).or_else(|_| {
-          warn!(
-            ?program,
-            "Preferred elevation program not found, falling back to \
+      Self::Prefer(program) => which(program).or_else(|_| {
+        warn!(
+          ?program,
+          "Preferred elevation program not found, falling back to \
              auto-detection"
-          );
-          Self::choice()
-        })
-      },
-      Self::Force(program_name) => {
-        which(program_name).context(format!(
-          "Forced elevation program '{program_name}' not found in PATH"
-        ))
-      },
+        );
+        Self::choice()
+      }),
+      Self::Force(program_name) => which(program_name).context(format!(
+        "Forced elevation program '{program_name}' not found in PATH"
+      )),
       // Only reachable if resolve() is called directly. Safe since callers
       // check is_some() before invoking resolve().
       Self::None => bail!("Elevation disabled via --elevation-strategy=none"),
@@ -267,27 +263,27 @@ impl ElevationStrategy {
 #[derive(Debug)]
 #[allow(clippy::struct_field_names)]
 pub struct Command {
-  dry:         bool,
-  message:     Option<String>,
-  command:     OsString,
-  args:        Vec<OsString>,
-  elevate:     Option<ElevationStrategy>,
-  ssh:         Option<String>,
+  dry: bool,
+  message: Option<String>,
+  command: OsString,
+  args: Vec<OsString>,
+  elevate: Option<ElevationStrategy>,
+  ssh: Option<String>,
   show_output: bool,
-  env_vars:    HashMap<String, EnvAction>,
+  env_vars: HashMap<String, EnvAction>,
 }
 
 impl Command {
   pub fn new<S: AsRef<OsStr>>(command: S) -> Self {
     Self {
-      dry:         false,
-      message:     None,
-      command:     command.as_ref().to_os_string(),
-      args:        vec![],
-      elevate:     None,
-      ssh:         None,
+      dry: false,
+      message: None,
+      command: command.as_ref().to_os_string(),
+      args: vec![],
+      elevate: None,
+      ssh: None,
       show_output: false,
-      env_vars:    HashMap::new(),
+      env_vars: HashMap::new(),
     }
   }
 
@@ -514,17 +510,17 @@ impl Command {
     // Insert 'env' command to explicitly pass environment variables to the
     // elevated command
     cmd = cmd.arg("env");
-    for arg in self.env_vars.iter().filter_map(|(key, action)| {
-      match action {
+    for arg in self
+      .env_vars
+      .iter()
+      .filter_map(|(key, action)| match action {
         EnvAction::Set(value) => Some(format!("{key}={value}")),
-        EnvAction::Preserve if preserve_env => {
-          std::env::var(key)
-            .ok()
-            .map(|value| format!("{key}={value}"))
-        },
+        EnvAction::Preserve if preserve_env => std::env::var(key)
+          .ok()
+          .map(|value| format!("{key}={value}")),
         _ => None,
-      }
-    }) {
+      })
+    {
       cmd = cmd.arg(arg);
     }
 
@@ -559,15 +555,13 @@ impl Command {
       .unwrap_or(true);
 
     parts.push("env".to_string());
-    for env_arg in self.env_vars.iter().filter_map(|(key, action)| {
-      match action {
-        EnvAction::Set(value) => Some(format!("{key}={value}")),
-        EnvAction::Preserve if preserve_env => {
-          std::env::var(key)
-            .map_or(None, |value| Some(format!("{key}={value}")))
-        },
-        _ => None,
-      }
+    for env_arg in self.env_vars.iter().filter_map(|(key, action)| match action
+    {
+      EnvAction::Set(value) => Some(format!("{key}={value}")),
+      EnvAction::Preserve if preserve_env => {
+        std::env::var(key).map_or(None, |value| Some(format!("{key}={value}")))
+      },
+      _ => None,
     }) {
       parts.push(env_arg);
     }
@@ -781,10 +775,10 @@ impl Command {
 
 #[derive(Debug)]
 pub struct Build {
-  message:     Option<String>,
+  message: Option<String>,
   installable: Installable,
-  extra_args:  Vec<OsString>,
-  nom:         bool,
+  extra_args: Vec<OsString>,
+  nom: bool,
 }
 
 impl Build {
@@ -851,33 +845,105 @@ impl Build {
       .args(&self.extra_args);
 
     if self.nom {
-      let pipeline = {
-        base_command
-          .args(["--log-format", "internal-json", "--verbose"])
-          .stderr(Redirection::Merge)
-          .stdout(Redirection::Pipe)
-          | Exec::cmd("nom").args(["--json"])
-      }
-      .stdout(Redirection::None);
-      debug!(?pipeline);
+      let nix_cmd = base_command
+        .args(["--log-format", "internal-json", "--verbose"])
+        .stderr(Redirection::Merge)
+        .stdout(Redirection::Pipe);
 
-      // Use `popen()` to get access to individual processes so we can check
-      // Nix's exit status, not nom's. The pipeline's `join()` only returns
-      // the exit status of the last command (nom), which always succeeds
-      // even when Nix fails.
-      let job = pipeline.start()?;
+      // When building a flake, nix copies the source into /nix/store and
+      // error messages reference that store path instead of the original.
+      // Resolve the exact store path for this flake so we can rewrite it.
+      let store_path_mapping =
+        self.installable.flake_reference().and_then(|flake_ref| {
+          let output = Exec::cmd("nix")
+            .args(["flake", "metadata", "--json", flake_ref])
+            .stdout(Redirection::Pipe)
+            .stderr(Redirection::None)
+            .capture()
+            .ok()?;
+          let json: serde_json::Value =
+            serde_json::from_str(&output.stdout_str()).ok()?;
+          let store_path = json.get("path")?.as_str()?.to_string();
+          let replacement = if flake_ref.ends_with('/') {
+            flake_ref.to_string()
+          } else {
+            format!("{flake_ref}/")
+          };
+          // Ensure store_path ends with / for prefix matching
+          let store_prefix = if store_path.ends_with('/') {
+            store_path
+          } else {
+            format!("{store_path}/")
+          };
+          debug!(
+            store_prefix,
+            replacement, "Will rewrite store paths in build output"
+          );
+          Some((store_prefix, replacement))
+        });
 
-      // Wait for all processes to finish
-      for proc in &job.processes {
-        proc.wait()?;
-      }
+      if let Some((ref store_prefix, ref replacement)) = store_path_mapping {
+        // Spawn nix, take its stdout, rewrite store paths, feed to nom
+        let mut nix_job = nix_cmd.start()?;
+        let nix_stdout = nix_job
+          .stdout
+          .take()
+          .ok_or_else(|| eyre::eyre!("Failed to capture nix stdout"))?;
 
-      // Check the exit status of the FIRST process (nix build)
-      // This is the one that matters. If Nix fails, we should fail as well
-      if let Some(nix_proc) = job.processes.first() {
-        let exit_status = nix_proc.wait()?;
+        let store_prefix = store_prefix.clone();
+        let replacement = replacement.clone();
+
+        // Spawn nom with stdin from a pipe
+        let mut nom_job = Exec::cmd("nom")
+          .args(["--json"])
+          .stdin(Redirection::Pipe)
+          .stdout(Redirection::None)
+          .start()?;
+        let mut nom_stdin = nom_job
+          .stdin
+          .take()
+          .ok_or_else(|| eyre::eyre!("Failed to open nom stdin"))?;
+
+        // Shuttle lines from nix to nom, rewriting store paths
+        let writer = std::thread::spawn(move || -> std::io::Result<()> {
+          use std::io::{BufRead, BufReader, Write};
+          let reader = BufReader::new(nix_stdout);
+          for line in reader.lines() {
+            let line: String = line?;
+            let rewritten = line.replace(&store_prefix, &replacement);
+            writeln!(nom_stdin, "{rewritten}")?;
+          }
+          Ok(())
+        });
+
+        // Wait for the writer thread (it finishes when nix closes stdout)
+        if let Err(e) = writer.join().expect("writer thread panicked") {
+          // BrokenPipe is expected if nom exits before nix finishes
+          if e.kind() != std::io::ErrorKind::BrokenPipe {
+            warn!("Error piping to nom: {e}");
+          }
+        }
+
+        nom_job.wait()?;
+        let exit_status = nix_job.wait()?;
         if !exit_status.success() {
           bail!(ExitError(exit_status));
+        }
+      } else {
+        // No flake reference or couldn't resolve store path — use simple pipeline
+        let pipeline = (nix_cmd | Exec::cmd("nom").args(["--json"]))
+          .stdout(Redirection::None);
+        debug!(?pipeline);
+
+        let job = pipeline.start()?;
+        for proc in &job.processes {
+          proc.wait()?;
+        }
+        if let Some(nix_proc) = job.processes.first() {
+          let exit_status = nix_proc.wait()?;
+          if !exit_status.success() {
+            bail!(ExitError(exit_status));
+          }
         }
       }
     } else {
@@ -918,7 +984,7 @@ mod tests {
 
   // Safely manage environment variables in tests
   struct EnvGuard {
-    key:      String,
+    key: String,
     original: Option<String>,
   }
 
@@ -990,11 +1056,14 @@ mod tests {
     assert!(cmd.show_output);
     assert_eq!(cmd.elevate, Some(ElevationStrategy::Force("sudo")));
     assert_eq!(cmd.message, Some("test message".to_string()));
-    assert_eq!(cmd.args, vec![
-      OsString::from("arg1"),
-      OsString::from("arg2"),
-      OsString::from("arg3")
-    ]);
+    assert_eq!(
+      cmd.args,
+      vec![
+        OsString::from("arg1"),
+        OsString::from("arg2"),
+        OsString::from("arg3")
+      ]
+    );
   }
 
   #[test]
@@ -1413,12 +1482,15 @@ mod tests {
       .nom(true);
 
     assert_eq!(build.message, Some("Building package".to_string()));
-    assert_eq!(build.extra_args, vec![
-      OsString::from("--verbose"),
-      OsString::from("--option"),
-      OsString::from("setting"),
-      OsString::from("value")
-    ]);
+    assert_eq!(
+      build.extra_args,
+      vec![
+        OsString::from("--verbose"),
+        OsString::from("--option"),
+        OsString::from("setting"),
+        OsString::from("value")
+      ]
+    );
     assert!(build.nom);
   }
 
@@ -1478,24 +1550,20 @@ mod tests {
   fn test_parse_cmdline_mixed_quotes() {
     let result = shlex::split(r#"cmd 'single quoted' "double quoted" normal"#)
       .unwrap_or_default();
-    assert_eq!(result, vec![
-      "cmd",
-      "single quoted",
-      "double quoted",
-      "normal"
-    ]);
+    assert_eq!(
+      result,
+      vec!["cmd", "single quoted", "double quoted", "normal"]
+    );
   }
 
   #[test]
   fn test_parse_cmdline_with_equals_in_quotes() {
     let result = shlex::split("sudo env 'PATH=/path/with spaces' /bin/cmd")
       .unwrap_or_default();
-    assert_eq!(result, vec![
-      "sudo",
-      "env",
-      "PATH=/path/with spaces",
-      "/bin/cmd"
-    ]);
+    assert_eq!(
+      result,
+      vec!["sudo", "env", "PATH=/path/with spaces", "/bin/cmd"]
+    );
   }
 
   #[test]
@@ -1527,14 +1595,17 @@ mod tests {
     let cmdline =
       r"/usr/bin/sudo env 'PATH=/path with spaces' /usr/bin/nh clean all";
     let result = shlex::split(cmdline).unwrap_or_default();
-    assert_eq!(result, vec![
-      "/usr/bin/sudo",
-      "env",
-      "PATH=/path with spaces",
-      "/usr/bin/nh",
-      "clean",
-      "all"
-    ]);
+    assert_eq!(
+      result,
+      vec![
+        "/usr/bin/sudo",
+        "env",
+        "PATH=/path with spaces",
+        "/usr/bin/nh",
+        "clean",
+        "all"
+      ]
+    );
   }
 
   #[test]
@@ -1636,11 +1707,14 @@ mod tests {
       "/nix/store/abc123-foo/bin/cmd --flag /nix/store/def456-bar",
     )
     .unwrap_or_default();
-    assert_eq!(result, vec![
-      "/nix/store/abc123-foo/bin/cmd",
-      "--flag",
-      "/nix/store/def456-bar"
-    ]);
+    assert_eq!(
+      result,
+      vec![
+        "/nix/store/abc123-foo/bin/cmd",
+        "--flag",
+        "/nix/store/def456-bar"
+      ]
+    );
   }
 
   #[test]
@@ -1663,15 +1737,18 @@ mod tests {
     // Complex sudo command with multiple quoted args
     let cmdline = r#"/usr/bin/sudo -E env 'HOME=/root' "PATH=/usr/bin" /usr/bin/nh os switch"#;
     let result = shlex::split(cmdline).unwrap_or_default();
-    assert_eq!(result, vec![
-      "/usr/bin/sudo",
-      "-E",
-      "env",
-      "HOME=/root",
-      "PATH=/usr/bin",
-      "/usr/bin/nh",
-      "os",
-      "switch"
-    ]);
+    assert_eq!(
+      result,
+      vec![
+        "/usr/bin/sudo",
+        "-E",
+        "env",
+        "HOME=/root",
+        "PATH=/usr/bin",
+        "/usr/bin/nh",
+        "os",
+        "switch"
+      ]
+    );
   }
 }

@@ -508,6 +508,15 @@ const FALLBACK_HELP_HINT: &str =
   "See 'man nh' or https://github.com/nix-community/nh for more details.";
 
 impl Installable {
+  /// Returns the flake reference path if this is a Flake installable.
+  #[must_use]
+  pub fn flake_reference(&self) -> Option<&str> {
+    match self {
+      Self::Flake { reference, .. } => Some(reference.as_str()),
+      _ => None,
+    }
+  }
+
   #[must_use]
   pub const fn str_kind(&self) -> &str {
     match self {
